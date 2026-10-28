@@ -1,13 +1,13 @@
-﻿; 编译exe文件信息及版本号设置
-global 当前工具版本:="1.2.0"                                                 ;设置版本号
+; 编译exe文件信息及版本号设置
+global 当前工具版本:="1.2.1"                                                 ;设置版本号
 ;@Ahk2Exe-Obey U_bits, = "%A_PtrSize%>4" ? "-64bit" : "-32bit"       ;判断位数
-;@Ahk2Exe-Let U_version = %A_PriorLine~U)^(.+"){1}(.+)".*$~$2%       ;读取版本号以编译
-;@Ahk2Exe-SetMainIcon GhostSnap图标.ico                              ;指定托盘图标文件
-;@Ahk2Exe-AddResource GhostSnap图标.ico, 160                         ;替换自带的'蓝色H'图标
-;@Ahk2Exe-AddResource GhostSnap图标.ico, 206                         ;替换为 '绿色 S'
-;@Ahk2Exe-AddResource GhostSnap图标.ico, 207                         ;替换自带的'红色H'图标
-;@Ahk2Exe-AddResource GhostSnap图标.ico, 208                         ;替换为 '红色 S'
-;@Ahk2Exe-ExeName %A_ScriptDir%\GhostSnap%U_version%.exe             ;打包后的exe文件路径
+;@Ahk2Exe-Let U_version = 1.2.1                                      ;读取版本号以编译
+;@Ahk2Exe-SetMainIcon GhostSnap.ico                                    ;指定托盘图标文件
+;@Ahk2Exe-AddResource GhostSnap.ico, 160                               ;替换自带的'蓝色H'图标
+;@Ahk2Exe-AddResource GhostSnap.ico, 206                               ;替换为 '绿色 S'
+;@Ahk2Exe-AddResource GhostSnap.ico, 207                               ;替换自带的'红色H'图标
+;@Ahk2Exe-AddResource GhostSnap.ico, 208                               ;替换为 '红色 S'
+;@Ahk2Exe-ExeName %A_ScriptDir%\GhostSnap.exe                        ;打包后的exe文件路径
 ;@Ahk2Exe-SetCompanyName 逍遥xiaoyao                                 ;企业信息
 ;@Ahk2Exe-SetCopyright 逍遥xiaoyao                                   ;版权信息
 ;@Ahk2Exe-SetDescription 把窗口拖拽变成磁铁吸附，靠近边缘自动对齐       ;文件说明
@@ -117,6 +117,8 @@ global AutoHideAnimSteps := Var_Read("AutoHideAnimSteps","5","贴边隐藏",Sett
 global AutoHideAnimSleep := Var_Read("AutoHideAnimSleep","8","贴边隐藏",SettingsDir,"否")                     ;贴边隐藏动画每帧延迟
 global HiddenWindows := {}                                                                                   ;用于存储正在贴边隐藏的窗口信息字典
 global wasHiddenHwnd := 0                                                                                    ;用于存储被拖拽出的贴边隐藏窗口ID
+global EnableAutoHideMemory := Var_Read("EnableAutoHideMemory","1","贴边隐藏",SettingsDir,"否")                 ;是否自动记忆并恢复窗口贴边隐藏
+global PendingRestoreHwnds := {}                                                                              ;待处理贴边恢复的新窗口队列
 
 ; --- 自绘菜单配置 ---
 global MenuGdipTheme := Var_Read("MenuGdipTheme","Light","自绘菜单",SettingsDir,"否")                         ; 1. 主题 (Light/Dark)
@@ -297,6 +299,14 @@ if (CurrentDragDirectKey != "")
     Hotkey, %CurrentDragDirectKey%, DoDirectDrag, On, UseErrorLevel
 if (CurrentResizeModKey != "")
     Hotkey, %CurrentResizeModKey% & LButton, DoResizeDrag, On, UseErrorLevel
+
+; --- 窗口生命周期监听：实现贴边隐藏自动记忆与恢复 ---
+if (EnableAutoHideMemory) {
+    DllCall("RegisterShellHookWindow", "Ptr", A_ScriptHwnd)
+    global ShellHookMsg := DllCall("RegisterWindowMessage", "Str", "SHELLHOOK")
+    OnMessage(ShellHookMsg, "ShellMessage")
+    SetTimer, InitRestoreAutoHideWindows, -800
+}
 
 OnExit("Cleanup")
 ; ==========================================
@@ -785,7 +795,9 @@ OpenSettingsGui:
     Gui, Settings:Add, UpDown, Range1-100, %AutoHideAnimSleep%
 
     Gui, Settings:Add, Checkbox, x30 y305 w350 h20 vGui_AutoHideFullscreen Checked%AutoHideFullscreenHide%, 全屏时自动完全隐藏凸出部分 (防打扰)
-    Gui, Settings:Add, Text, x30 y330 w400 h40 cGray, 提示：按住指定修饰键移动到边缘即可触发。贴边隐藏的窗口再次拖拽可记忆原状态。
+    Gui, Settings:Add, Checkbox, x30 y330 w240 h20 vGui_EnableAutoHideMemory Checked%EnableAutoHideMemory%, 记忆贴边状态 (重启软件后自动恢复贴边)
+    Gui, Settings:Add, Button, x280 y328 w110 h24 gClearAutoHideMemory, 清空贴边记忆
+    Gui, Settings:Add, Text, x30 y360 w400 h35 cGray, 提示：按住指定修饰键移动到边缘即可贴边隐藏；移回屏幕中央即可解除记忆。
 
     GoSub, ToggleAutoHideAnimGuiState
 
@@ -955,6 +967,8 @@ ApplyConfig:
     Var_Set(Gui_AHAnimSteps, "5", "AutoHideAnimSteps", "贴边隐藏", SettingsDir)
     Var_Set(Gui_AHAnimSleep, "8", "AutoHideAnimSleep", "贴边隐藏", SettingsDir)
     Var_Set(Gui_AutoHideFullscreen, "1", "AutoHideFullscreenHide", "贴边隐藏", SettingsDir)
+    Var_Set(Gui_EnableAutoHideMemory, "1", "EnableAutoHideMemory", "贴边隐藏", SettingsDir)
+    EnableAutoHideMemory := Gui_EnableAutoHideMemory
 
     Var_Set(Gui_MenuStyle, "2", "MenuStyle", "基础配置", SettingsDir)
     MenuStyle := Gui_MenuStyle
@@ -1085,6 +1099,11 @@ SettingsGuiClose:
     Gui, Settings:Destroy
 return
 
+ClearAutoHideMemory:
+    IniDelete, %SettingsDir%, 贴边记忆
+    MsgBox, 64, 提示, 已清空所有保存的窗口贴边隐藏记忆！
+return
+
 SyncMenuHotkey:
     GuiControlGet, capturedKey,, Gui_MenuHotkey_Helper
     if (capturedKey != "")
@@ -1128,6 +1147,9 @@ Cleanup() {
 
     DllCall("UnhookWinEvent", "Ptr", hookStart)
     DllCall("UnhookWinEvent", "Ptr", hookEnd)
+    if (EnableAutoHideMemory) {
+        DllCall("DeregisterShellHookWindow", "Ptr", A_ScriptHwnd)
+    }
     Gdip_Shutdown(pToken) ; 【新增】脚本退出时统一释放 GDI+
 }
 
@@ -1829,12 +1851,17 @@ ForceEndMove:
 
                 ; 强制触发一次隐藏动画进行收缩
                 DoAnimateWindow(movingHwnd, finalX, finalY, hiddenX, hiddenY, finalW, finalH)
+                if (EnableAutoHideMemory)
+                    SaveAutoHideRule(movingHwnd, edge, finalX, finalY, finalW, finalH)
             }
         }
         willSnap := false
     }
 
     wasHiddenHwnd := 0
+    if (EnableAutoHideMemory && wasHiddenHwnd && !HiddenWindows.HasKey(wasHiddenHwnd)) {
+        RemoveAutoHideRule(wasHiddenHwnd)
+    }
     movingHwnd := 0
 return
 
@@ -3979,6 +4006,8 @@ ForceEdgeHide_xy(edge, WinTitle:="A") {
 
     ; 强制触发一次隐藏动画，从窗口当前位置直接平滑吸入到边缘
     DoAnimateWindow(targetHwnd, sX, sY, hiddenX, hiddenY, sW, sH)
+    if (EnableAutoHideMemory)
+        SaveAutoHideRule(targetHwnd, edge, shownX, shownY, sW, sH)
 }
 
 ;[打开当前窗口进程所在目录] v1.0.7===============================================================================================
@@ -4499,3 +4528,138 @@ win_clickthrough_xy(WinTitle:="A"){
     }
 }
 ;======================================================================================菜单调用的函数[结束]======================================================================================
+
+; ===========================================================
+; 贴边隐藏记忆模块 (持久化与新窗口/程序自启动自动恢复贴边)
+; ===========================================================
+
+ShellMessage(wParam, lParam) {
+    global EnableAutoHideMemory, PendingRestoreHwnds
+    if (!EnableAutoHideMemory)
+        return
+    ; 1: HSHELL_WINDOWCREATED (新窗口创建), 6: HSHELL_REDRAW (窗口重绘就绪)
+    if (wParam == 1 || wParam == 6) {
+        if (lParam) {
+            PendingRestoreHwnds[lParam] := 1
+            SetTimer, ProcessPendingRestoreHwnds, -300
+        }
+    }
+}
+
+ProcessPendingRestoreHwnds:
+    global PendingRestoreHwnds, EnableAutoHideMemory
+    if (!EnableAutoHideMemory)
+        return
+    hwndsToCheck := []
+    For hw, attempts in PendingRestoreHwnds
+        hwndsToCheck.Push({hwnd: hw, attempt: attempts})
+    PendingRestoreHwnds := {}
+
+    For _, item in hwndsToCheck {
+        hw := item.hwnd
+        if (!WinExist("ahk_id " hw))
+            continue
+        if (!ApplyAutoHideFromMemory(hw)) {
+            ; 某些大型软件界面异步绘制，收到通知时尺寸或可见性尚未完全就绪，延时再试一次
+            if (item.attempt < 2) {
+                PendingRestoreHwnds[hw] := item.attempt + 1
+                SetTimer, ProcessPendingRestoreHwnds, -500
+            }
+        }
+    }
+return
+
+InitRestoreAutoHideWindows:
+    DetectHiddenWindows, Off
+    WinGet, winList, List
+    Loop, %winList% {
+        thisHwnd := winList%A_Index%
+        ApplyAutoHideFromMemory(thisHwnd)
+    }
+return
+
+SaveAutoHideRule(hwnd, edge, shownX, shownY, w, h) {
+    global SettingsDir
+    if (!hwnd || !WinExist("ahk_id " hwnd))
+        return
+
+    WinGet, pName, ProcessName, ahk_id %hwnd%
+    WinGetClass, wClass, ahk_id %hwnd%
+    if (pName == "" || wClass == "")
+        return
+
+    ruleKey := pName . "|" . wClass
+    ruleVal := edge . "," . shownX . "," . shownY . "," . w . "," . h
+    IniWrite, %ruleVal%, %SettingsDir%, 贴边记忆, %ruleKey%
+}
+
+RemoveAutoHideRule(hwnd) {
+    global SettingsDir
+    if (!hwnd)
+        return
+
+    WinGet, pName, ProcessName, ahk_id %hwnd%
+    WinGetClass, wClass, ahk_id %hwnd%
+    if (pName != "" && wClass != "") {
+        ruleKey := pName . "|" . wClass
+        IniDelete, %SettingsDir%, 贴边记忆, %ruleKey%
+    }
+}
+
+ApplyAutoHideFromMemory(hwnd) {
+    global SettingsDir, EnableAutoHideMemory, HiddenWindows, GhostHwnd, Blacklist
+    if (!EnableAutoHideMemory || !hwnd || !WinExist("ahk_id " hwnd))
+        return false
+
+    if (hwnd == GhostHwnd || hwnd == A_ScriptHwnd)
+        return false
+
+    if (HiddenWindows.HasKey(hwnd))
+        return false
+
+    if (Blacklist != "" && CheckWindowInList(hwnd, Blacklist))
+        return false
+
+    WinGet, style, Style, ahk_id %hwnd%
+    ; 排除不可见窗口与子窗口
+    if (!(style & 0x10000000) || (style & 0x40000000))
+        return false
+
+    WinGet, exStyle, ExStyle, ahk_id %hwnd%
+    ; 排除工具栏浮窗
+    if (exStyle & 0x80)
+        return false
+
+    WinGet, minMax, MinMax, ahk_id %hwnd%
+    if (minMax == -1)
+        return false
+
+    WinGet, pName, ProcessName, ahk_id %hwnd%
+    WinGetClass, wClass, ahk_id %hwnd%
+    if (pName == "" || wClass == "")
+        return false
+
+    ruleKey := pName . "|" . wClass
+    IniRead, ruleVal, %SettingsDir%, 贴边记忆, %ruleKey%, % A_Space
+    if (ruleVal == "" || ruleVal == A_Space) {
+        IniRead, ruleVal, %SettingsDir%, 贴边记忆, %pName%, % A_Space
+    }
+    if (ruleVal == "" || ruleVal == A_Space)
+        return false
+
+    parts := StrSplit(ruleVal, ",")
+    if (parts.Length() < 5)
+        return false
+
+    edge := parts[1]
+    sX := parts[2], sY := parts[3], sW := parts[4], sH := parts[5]
+
+    ; 还原到先前展开记录的尺寸和坐标
+    if (sW > 50 && sH > 50) {
+        WinMove, ahk_id %hwnd%, , %sX%, %sY%, %sW%, %sH%
+    }
+
+    ; 直接应用贴边隐藏收缩
+    ForceEdgeHide_xy(edge, "ahk_id " hwnd)
+    return true
+}
